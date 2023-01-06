@@ -3,12 +3,13 @@
 from radarGuidance import *
 from wallFollower import *
 
-import random #used for the random choice of a strategy
-import sys
+import random  # used for the random choice of a strategy
 import numpy as np
 import math
+import time
+from itertools import permutations, product
 
-#--------------------------------------
+# --------------------------------------
 # Position of the goal:
 goalx = 300
 goaly = 450
@@ -21,7 +22,7 @@ choice_tm1 = -1
 tLastChoice = 0
 rew = 0
 
-i2name=['wallFollower','radarGuidance']
+i2name = ["wallFollower", "radarGuidance"]
 
 # Parameters of State building:
 # threshold for wall consideration
@@ -33,164 +34,196 @@ th_obstacleTooClose = 13
 angleLMin = 0
 angleLMax = 55
 
-angleFMin=56
-angleFMax=143
+angleFMin = 56
+angleFMax = 143
 
-angleRMin=144
-angleRMax=199
+angleRMin = 144
+angleRMax = 199
 
 # Q-learning related stuff:
 # definition of states at time t and t-1
-S_t = ''
-S_tm1 = ''
+S_t = ""
+S_tm1 = ""
 
-#--------------------------------------
+alpha = 0.4
+beta = 4
+gamma = 0.95
+
+states = product([0, 1], repeat=3)
+states = [c + (i,) for c in states for i in range(8)]
+states = [c + (i,) for c in states for i in range(3)]
+states = ["".join(map(str, c)) for c in states]
+
+Q = dict.fromkeys(states, np.zeros(2))
+
+# --------------------------------------
 # the function that selects which controller (radarGuidance or wallFollower) to use
 # sets the global variable "choice" to 0 (wallFollower) or 1 (radarGuidance)
-# * arbitrationMethod: how to select? 'random','randPersist','qlearning'
-def strategyGating(arbitrationMethod,verbose=True):
-  global choice
-  global choice_tm1
-  global tLastChoice
-  global rew
+# * arbitrationMethod: how to select? 'random','randomPersist','qlearning'
+def strategyGating(arbitrationMethod, verbose=True):
+    global choice
+    global choice_tm1
+    global tLastChoice
+    global rew
+    global Q
 
-  # The chosen gating strategy is to be coded here:
-  #------------------------------------------------
-  if arbitrationMethod=='random':
-    choice = random.randrange(2)
-  #------------------------------------------------
-  elif arbitrationMethod=='randomPersist':
-    print('Persistent Random selection : to be implemented')
-  #------------------------------------------------
-  elif arbitrationMethod=='qlearning':
-    print('Q-Learning selection : to be implemented')
-  #------------------------------------------------
-  else:
-    print(arbitrationMethod+' unknown.')
-    exit()
-
-  if verbose:
-    print("strategyGating: Active Module: "+i2name[choice])
-
-#--------------------------------------
-def buildStateFromSensors(laserRanges,radar,dist2goal):
-  S   = ''
-  # determine if obstacle on the left:
-  wall='0'
-  if min(laserRanges[angleLMin:angleLMax]) < th_neglectedWall:
-    wall ='1'
-  S += wall
-  # determine if obstacle in front:
-  wall='0'
-  if min(laserRanges[angleFMin:angleFMax]) < th_neglectedWall:
-    wall ='1'
-    #print("Mur Devant")
-  S += wall
-  # determine if obstacle on the right:
-  wall='0'
-  if min(laserRanges[angleRMin:angleRMax]) < th_neglectedWall:
-    wall ='1'
-  S += wall
-
-  S += str(radar)
-
-  if dist2goal < 125:
-    S+='0'
-  elif dist2goal < 250:
-    S+='1'
-  else:
-    S+='2'
-  #print('buildStateFromSensors: State: '+S)
-
-  return S
-
-#--------------------------------------
-def main():
-  global S_t
-  global S_tm1
-  global rew
-
-  settings = Settings('worlds/entonnoir.xml')
-
-  env_map = settings.map()
-  robot = settings.robot()
-
-  d = Display(env_map, robot)
-
-  method = 'random'
-  # experiment related stuff
-  startT = time.time()
-  trial = 0
-  nbTrials = 40
-  trialDuration = np.zeros((nbTrials))
-
-  i = 0
-  while trial<nbTrials:
-    # update the display
-    #-------------------------------------
-    d.update()
-    # get position data from the simulation
-    #-------------------------------------
-    pos = robot.get_pos()
-    # print("##########\nStep "+str(i)+" robot pos: x = "+str(int(pos.x()))+" y = "+str(int(pos.y()))+" theta = "+str(int(pos.theta()/math.pi*180.)))
-
-    # has the robot found the reward ?
-    #------------------------------------
-    dist2goal = math.sqrt((pos.x()-goalx)**2+(pos.y()-goaly)**2)
-    # if so, teleport it to initial position, store trial duration, set reward to 1:
-    if (dist2goal<20): # 30
-      print('***** REWARD REACHED *****')
-      pos.set_x(initx)
-      pos.set_y(inity)
-      robot.set_pos(pos) # format ?
-      # and store information about the duration of the finishing trial:
-      currT = time.time()
-      trialDuration[trial] = currT - startT
-      startT = currT
-      print("Trial "+str(trial)+" duration:"+str(trialDuration[trial]))
-      trial +=1
-      rew = 1
-
-    # get the sensor inputs:
-    #------------------------------------
-    lasers = robot.get_laser_scanners()[0].get_lasers()
-    laserRanges = []
-    for l in lasers:
-      laserRanges.append(l.get_dist())
-
-    radar = robot.get_radars()[0].get_activated_slice()
-
-    bumperL = robot.get_left_bumper()
-    bumperR = robot.get_right_bumper()
-
-
-    # 2) has the robot bumped into a wall ?
-    #------------------------------------
-    if bumperR or bumperL or min(laserRanges[angleFMin:angleFMax]) < th_obstacleTooClose:
-      rew = -1
-      print("***** BING! ***** "+i2name[choice])
-
-    # 3) build the state, that will be used by learning, from the sensory data
-    #------------------------------------
-    S_tm1 = S_t
-    S_t = buildStateFromSensors(laserRanges,radar, dist2goal)
-
-    #------------------------------------
-    strategyGating(method,verbose=False)
-    if choice==0:
-      v = wallFollower(laserRanges,verbose=False)
+    # The chosen gating strategy is to be coded here:
+    # ------------------------------------------------
+    if arbitrationMethod == "random":
+        choice = random.randrange(2)
+    # ------------------------------------------------
+    elif arbitrationMethod == "randomPersist":
+        if time.time() - tLastChoice >= 2.0:
+            choice = random.randrange(2)
+            tLastChoice = time.time()
+    # ------------------------------------------------
+    elif arbitrationMethod == "qlearning":
+        if S_tm1 != "" and time.time() - tLastChoice >= 2.0:
+            # Compute the TD error
+            delta = rew + gamma * Q[S_t].max() - Q[S_tm1][choice_tm1]
+            # Update last action Q-value
+            Q[S_tm1][choice_tm1] += alpha * delta
+            # Current state Q-values softmax
+            probs = np.exp(beta * Q[S_t]) / np.sum(np.exp(beta * Q[S_t]))
+            # Draw an action according to the probs distribution
+            choice = np.random.choice(2, p=probs)
+            choice_tm1 = choice
+            tLastChoice = time.time()
+    # ------------------------------------------------
     else:
-      v = radarGuidance(laserRanges,bumperL,bumperR,radar,verbose=False)
+        print(arbitrationMethod + " unknown.")
+        exit()
 
-    i+=1
-    robot.move(v[0], v[1], env_map)
-    time.sleep(0.01)
+    if verbose:
+        print("strategyGating: Active Module: " + i2name[choice])
 
-  # When the experiment is over:
-  np.savetxt('log/'+str(startT)+'-TrialDurations-'+method+'.txt',trialDuration)
 
-#--------------------------------------
+# --------------------------------------
+def buildStateFromSensors(laserRanges, radar, dist2goal):
+    S = ""
+    # determine if obstacle on the left:
+    wall = "0"
+    if min(laserRanges[angleLMin:angleLMax]) < th_neglectedWall:
+        wall = "1"
+    S += wall
+    # determine if obstacle in front:
+    wall = "0"
+    if min(laserRanges[angleFMin:angleFMax]) < th_neglectedWall:
+        wall = "1"
+        # print("Mur Devant")
+    S += wall
+    # determine if obstacle on the right:
+    wall = "0"
+    if min(laserRanges[angleRMin:angleRMax]) < th_neglectedWall:
+        wall = "1"
+    S += wall
 
-if __name__ == '__main__':
-  random.seed()
-  main()
+    S += str(radar)
+
+    if dist2goal < 125:
+        S += "0"
+    elif dist2goal < 250:
+        S += "1"
+    else:
+        S += "2"
+    # print('buildStateFromSensors: State: '+S)
+
+    return S
+
+
+# --------------------------------------
+def main():
+    global S_t
+    global S_tm1
+    global rew
+
+    settings = Settings("worlds/entonnoir.xml")
+
+    env_map = settings.map()
+    robot = settings.robot()
+
+    d = Display(env_map, robot)
+
+    method = "qlearning"
+    # experiment related stuff
+    startT = time.time()
+    trial = 0
+    nbTrials = 40
+    trialDuration = np.zeros((nbTrials))
+
+    i = 0
+    while trial < nbTrials:
+        # update the display
+        # -------------------------------------
+        d.update()
+        # get position data from the simulation
+        # -------------------------------------
+        pos = robot.get_pos()
+        # print("##########\nStep "+str(i)+" robot pos: x = "+str(int(pos.x()))+" y = "+str(int(pos.y()))+" theta = "+str(int(pos.theta()/math.pi*180.)))
+
+        # has the robot found the reward ?
+        # ------------------------------------
+        dist2goal = math.sqrt((pos.x() - goalx) ** 2 + (pos.y() - goaly) ** 2)
+        # if so, teleport it to initial position, store trial duration, set reward to 1:
+        if dist2goal < 20:  # 30
+            print("***** REWARD REACHED *****")
+            pos.set_x(initx)
+            pos.set_y(inity)
+            robot.set_pos(pos)  # format ?
+            # and store information about the duration of the finishing trial:
+            currT = time.time()
+            trialDuration[trial] = currT - startT
+            startT = currT
+            print("Trial " + str(trial) + " duration:" + str(trialDuration[trial]))
+            trial += 1
+            rew = 1
+
+        # get the sensor inputs:
+        # ------------------------------------
+        lasers = robot.get_laser_scanners()[0].get_lasers()
+        laserRanges = []
+        for l in lasers:
+            laserRanges.append(l.get_dist())
+
+        radar = robot.get_radars()[0].get_activated_slice()
+
+        bumperL = robot.get_left_bumper()
+        bumperR = robot.get_right_bumper()
+
+        # 2) has the robot bumped into a wall ?
+        # ------------------------------------
+        if (
+            bumperR
+            or bumperL
+            or min(laserRanges[angleFMin:angleFMax]) < th_obstacleTooClose
+        ):
+            rew = -1
+            print("***** BING! ***** " + i2name[choice])
+
+        # 3) build the state, that will be used by learning, from the sensory data
+        # ------------------------------------
+        S_tm1 = S_t
+        S_t = buildStateFromSensors(laserRanges, radar, dist2goal)
+
+        # ------------------------------------
+        strategyGating(method, verbose=False)
+        if choice == 0:
+            v = wallFollower(laserRanges, verbose=False)
+        else:
+            v = radarGuidance(laserRanges, bumperL, bumperR, radar, verbose=False)
+
+        i += 1
+        robot.move(v[0], v[1], env_map)
+        time.sleep(0.01)
+
+    # When the experiment is over:
+    np.savetxt(
+        "log/" + str(startT) + "-TrialDurations-" + method + ".txt", trialDuration
+    )
+
+
+# --------------------------------------
+
+if __name__ == "__main__":
+    random.seed()
+    main()
