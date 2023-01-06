@@ -20,6 +20,7 @@ inity = 35
 choice = -1
 choice_tm1 = -1
 tLastChoice = 0
+timeout = 2.0
 rew = 0
 
 i2name = ["wallFollower", "radarGuidance"]
@@ -55,6 +56,7 @@ states = [c + (i,) for c in states for i in range(3)]
 states = ["".join(map(str, c)) for c in states]
 
 Q = dict.fromkeys(states, np.zeros(2))
+choice_made = False
 
 # --------------------------------------
 # the function that selects which controller (radarGuidance or wallFollower) to use
@@ -64,8 +66,10 @@ def strategyGating(arbitrationMethod, verbose=True):
     global choice
     global choice_tm1
     global tLastChoice
+    global timeout
     global rew
     global Q
+    global choice_made
 
     # The chosen gating strategy is to be coded here:
     # ------------------------------------------------
@@ -73,22 +77,39 @@ def strategyGating(arbitrationMethod, verbose=True):
         choice = random.randrange(2)
     # ------------------------------------------------
     elif arbitrationMethod == "randomPersist":
-        if time.time() - tLastChoice >= 2.0:
+        if time.time() - tLastChoice >= timeout:
             choice = random.randrange(2)
             tLastChoice = time.time()
     # ------------------------------------------------
     elif arbitrationMethod == "qlearning":
-        if S_tm1 != "" and time.time() - tLastChoice >= 2.0:
+        if S_tm1 == "":
+            return
+
+        # Update Q value for the last action taken if the state has changed,
+        # the reward is non-zero, or a new choice has been made
+        if (S_tm1 != S_t) or (rew != 0) or (choice_made):
             # Compute the TD error
             delta = rew + gamma * Q[S_t].max() - Q[S_tm1][choice_tm1]
             # Update last action Q-value
             Q[S_tm1][choice_tm1] += alpha * delta
-            # Current state Q-values softmax
+
+        # Choose new action if the state has changed, the reward is non-zero,
+        # or 2 seconds have passed since the last choice
+        if (S_tm1 != S_t) or (rew != 0) or (time.time() - tLastChoice >= timeout):
+            # Update choice_tm1 and choice_made
+            choice_tm1 = choice
+            choice_made = True
+
+            # Compute the probalities distribution
             probs = np.exp(beta * Q[S_t]) / np.sum(np.exp(beta * Q[S_t]))
             # Draw an action according to the probs distribution
             choice = np.random.choice(2, p=probs)
-            choice_tm1 = choice
-            tLastChoice = time.time()
+
+            # Update tLastChoice if a new choice has been made
+            if choice != choice_tm1:
+                tLastChoice = time.time()
+        else:
+            choice_made = False
     # ------------------------------------------------
     else:
         print(arbitrationMethod + " unknown.")
